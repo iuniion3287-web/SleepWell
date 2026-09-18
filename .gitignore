@@ -14,3 +14,7 @@
 .cxx
 local.properties
 /.omc
+
+# Samsung Health Data SDK is confidential/non-redistributable per its license.
+# Each developer downloads their own copy — see app/libs/README.md.
+app/libs/*.aar
