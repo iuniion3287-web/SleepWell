@@ -1,0 +1,24 @@
+# Kotlin 앱 소스
+# (src/ 하위만 포함, 나머지 제외)
+
+# Python 스크립트 (보고서 생성용)
+*.py
+
+# PDF 보고서 (저장소에는 불필요, 별도 공유)
+*.pdf
+
+# 임시/데이터 폴더 (앱 코드 아님)
+원본-*
+전처리 후*
+3. MVP*.zip
+
+# Windows 임시 파일
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# IDE
+.idea/
+*.iml
+.gradle/
+build/
