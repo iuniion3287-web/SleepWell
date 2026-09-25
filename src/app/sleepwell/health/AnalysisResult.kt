@@ -11,10 +11,10 @@ data class AnalysisResult(
     /** 현재 Process S (수면 압력, 0~1). 0=완전히 rested, 1=극도로 졸림 */
     val currentS: Double,
 
-    /** 현재 Process C (일주기 리듬, -1~1). 음수=수면 적합, 양수=각성 적합 */
+    /** 현재 C_sleep (일주기 리듬, 시계 시각 기준). 수면 중간 시각에서 +최대(수면 쪽), 반대편에서 -최대 */
     val currentC: Double,
 
-    /** 현재 수면 성향 (S + C) */
+    /** 현재 수면 성향 (S + C_sleep). 클수록 잠들기 쉬움 */
     val currentPropensity: Double,
 
     /** 최근 수면 기록 요약. 모델 기준 최근 7일, 기록 화면은 전체 표시. */

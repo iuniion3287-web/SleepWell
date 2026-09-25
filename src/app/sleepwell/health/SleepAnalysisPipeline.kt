@@ -1,21 +1,26 @@
 package app.sleepwell.health
 
-import java.io.File
+import java.io.InputStream
+import java.io.PrintWriter
+import java.io.StringWriter
 
 /**
  * 수면 분석 파이프라인 (채윤 담당).
  *
  * 흐름:
- *   CSV 파일 → CsvFileSource 파싱 → SleepSession 목록
+ *   InputStream(CSV) → CsvFileSource 파싱 → SleepSession 목록
  *     → SleepEpochConverter.toEpochTimeline() (전체 타임라인, WAKE 포함)
- *     → TwoProcessModel.compute() (S, C, propensity, 시계열)
- *     → TwoProcessModel.predictFutureS() (미래 S 예측 — 현재는 기본 시나리오)
- *     → AnalysisResult 조립 → 소빈(프론트) 전달
+ *     → TwoProcessModel.compute() (S, C_sleep, propensity, 시계열)
+ *     → TwoProcessModel.predictFutureS() (미래 S 예측)
+ *     → AnalysisResult 조립 → HealthResult<AnalysisResult> 반환
  *
  * 주의:
- *   - futureS · recommendation은 현재도 null ("준비 중" 표시, 서윤 언니 담당).
- *   - 입력 타임라인은 세션 사이 깨어 있던 시간까지 포함해야 함.
- *   - 모델 파라미터는 코드 기본값(임시 모델). 확정된 값이 아님.
+ *   - 입력: InputStream (File 아님). 함수 안에서 use{}로 닫음.
+ *   - 타임라인 범위: end = referenceTimeMs ?: 마지막 세션 endMs, start = end - 7일.
+ *     이 범위와 겹치는 세션만 epoch 변환에 사용. sleepRecords는 전체 유지.
+ *   - DirectInput.sleepStartMs~sleepEndMs 구간이 둘 다 있으면 그 구간을 수면(isSleep=true)으로
+ *     타임라인에 반영 (CSV 세션과 겹치면 CSV 우선).
+ *   - 예외를 밖으로 던지지 말 것. Unavailable / Failure로 변환.
  */
 object SleepAnalysisPipeline {
 
@@ -26,132 +31,216 @@ object SleepAnalysisPipeline {
     /**
      * CSV 파일부터 분석 결과까지 한 번에 실행.
      *
-     * @param csvFile       수면 단계 CSV 파일 (sleep_stage_cleaned.csv 형식)
-     * @param directInput   사용자 직접 입력 (선택). CSV가 없으면 이 값으로 타임라인 보간.
-     * @param futureIntervalMin 미래 S 예측 간격 (분). 그래프 표시 해상도 기준. 기본값 15분.
-     * @return AnalysisResult (futureS·recommendation은 null 가능)
-     * @throws IllegalArgumentException CSV 파싱 실패 시
+     * @param input          수면 단계 CSV (sleep_stage_cleaned.csv 형식)의 InputStream.
+     *                       함수 안에서 use{}로 닫음.
+     * @param directInput    사용자 직접 입력 (선택). sleepStartMs~sleepEndMs 구간이 있으면
+     *                       수면 구간으로 타임라인에 반영.
+     * @param referenceTimeMs 기준 시각 (선택). null이면 마지막 세션의 endMs.
+     *                       타임라인 범위: start = referenceTimeMs - 7일, end = referenceTimeMs.
+     * @return HealthResult<AnalysisResult>
+     *         - Success: 분석 결과
+     *         - Unavailable: 수면 기록이 없거나, 수면/각성 중 한쪽만 존재, 기록이 더 필요한 경우
+     *         - Failure: 그 외 예외
      */
     fun analyze(
-        csvFile: File,
+        input: InputStream,
         directInput: DirectInput? = null,
-        futureIntervalMin: Int = 15
-    ): AnalysisResult {
-        // ── 1. CSV 파싱 ──────────────────────────────────────────
-        val sessions = parseCsv(csvFile)
-            .also { requireNotEmpty(csvFile.name, it) }
+        referenceTimeMs: Long? = null
+    ): HealthResult<AnalysisResult> {
+        return try {
+            // ── 1. CSV 파싱 ──────────────────────────────────────────
+            val sessions = parseCsv(input)
+            if (sessions.isEmpty()) {
+                return HealthResult.Unavailable("수면 기록이 없습니다")
+            }
 
-        // ── 2. 타임라인 범위 결정 ────────────────────────────────
-        val (timelineStart, timelineEnd) = determineTimelineRange(sessions, directInput)
+            // ── 2. 타임라인 범위 결정 ────────────────────────────────
+            val (timelineStart, timelineEnd) = determineTimelineRange(sessions, referenceTimeMs)
 
-        // ── 3. 30초 epoch 전체 타임라인 변환 ─────────────────────
-        val epochTimeline = SleepEpochConverter.toEpochTimeline(
-            sessions = sessions,
-            startTimeMs = timelineStart,
-            endTimeMs = timelineEnd
-        )
+            // ── 3. 타임라인 범위와 겹치는 세션만 epoch 변환 ───────────
+            val sessionsInRange = filterSessionsInRange(sessions, timelineStart, timelineEnd)
+            if (sessionsInRange.isEmpty()) {
+                return HealthResult.Unavailable("기록이 더 필요합니다")
+            }
 
-        requireNotEmpty("epoch timeline", epochTimeline,
-            "CSV 파싱 결과가 없어 epoch 타임라인을 만들 수 없습니다.")
-
-        // ── 4. Two-Process 모델 실행 (S, C, propensity, history) ──
-        val (timestamps, isSleep) = SleepEpochConverter.toModelInputArrays(epochTimeline)
-        val processOutput = TwoProcessModel.compute(timestamps, isSleep)
-
-        // ── 5. 미래 S 예측 (기본 시나리오: 각성 가정, 서윤 언니 모델 대체 예정) ──
-        val futureSPoints = TwoProcessModel.predictFutureS(
-            lastS = processOutput.currentS,
-            lastTimestampMs = processOutput.lastTimestampMs,
-            futureIntervalMin = futureIntervalMin
-        )
-
-        // ── 6. sleepRecords 구성 (전체, 세션별 요약) ───────────────
-        val sleepRecords = sessions.map { session ->
-            val stageSummary = session.stages.groupBy { it.stage.name }
-                .mapValues { (_, segments) ->
-                    segments.sumOf { (it.endMs - it.startMs).toDouble() / 60000.0 }
-                }
-
-            SleepRecord(
-                sessionId = session.sessionId,
-                startMs = session.startMs,
-                endMs = session.endMs,
-                totalSleepMin = session.stages
-                    .filter { it.stage != SleepStage.WAKE }
-                    .sumOf { (it.endMs - it.startMs).toDouble() / 60000.0 },
-                stageSummary = stageSummary
+            val epochTimeline = SleepEpochConverter.toEpochTimeline(
+                sessions = sessionsInRange,
+                startTimeMs = timelineStart,
+                endTimeMs = timelineEnd
             )
-        }
 
-        // ── 7. scHistory 구성 (PropensityPoint 리스트로 변환) ───────
-        val scHistory = processOutput.history.map { point ->
-            PropensityPoint(
-                timestampMs = point.timestampMs,
-                S = point.S,
-                C = point.C,
-                propensity = point.propensity
+            // ── 4. DirectInput 반영 (sleepStartMs~sleepEndMs 구간 추가) ──
+            val extendedTimeline = applyDirectInput(epochTimeline, sessionsInRange, directInput,
+                timelineStart, timelineEnd)
+
+            requireNotEmpty("epoch timeline", extendedTimeline,
+                "CSV 파싱 결과가 없어 epoch 타임라인을 만들 수 없습니다.")
+
+            // ── 5. 수면/각성 클래스 확인 ──────────────────────────────
+            val sleepClasses = extendedTimeline.map { epoch ->
+                if (epoch.isSleep) SleepStage.LIGHT else SleepStage.WAKE
+            }.distinct()
+            if (sleepClasses.size < 2) {
+                return HealthResult.Unavailable("기록이 더 필요합니다")
+            }
+
+            // ── 6. Two-Process 모델 실행 (S, C_sleep, propensity, history) ──
+            val (timestamps, isSleep) = SleepEpochConverter.toModelInputArrays(extendedTimeline)
+            val processOutput = TwoProcessModel.compute(timestamps, isSleep)
+
+            // ── 7. 미래 S 예측 ────────────────────────────────────────
+            val futureSPoints = TwoProcessModel.predictFutureS(
+                lastS = processOutput.currentS,
+                lastTimestampMs = processOutput.lastTimestampMs,
+                phaseRef = processOutput.phaseRef,
+                futureIntervalMin = 15
             )
-        }
 
-        // ── 8. AnalysisResult 조립 ────────────────────────────────
-        return AnalysisResult(
-            currentS = processOutput.currentS,
-            currentC = processOutput.currentC,
-            currentPropensity = processOutput.currentPropensity,
-            sleepRecords = sleepRecords,
-            scHistory = scHistory,
-            futureS = futureSPoints,     // 임시 모델 예측값 (서윤 언니 확정 전)
-            recommendation = null,       // "준비 중" — 서윤 언니 담당
-            modelVersion = "임시 Two-Process Kotlin 모델 (기본 파라미터)",
-            calculationTimeMs = System.currentTimeMillis()
-        )
+            // ── 8. sleepRecords 구성 (전체, 세션별 요약) ───────────────
+            val sleepRecords = sessions.map { session ->
+                val stageSummary = session.stages.groupBy { it.stage.name }
+                    .mapValues { (_, segments) ->
+                        segments.sumOf { (it.endMs - it.startMs).toDouble() / 60_000.0 }
+                    }
+
+                SleepRecord(
+                    sessionId = session.sessionId,
+                    startMs = session.startMs,
+                    endMs = session.endMs,
+                    totalSleepMin = session.stages
+                        .filter { it.stage != SleepStage.WAKE }
+                        .sumOf { (it.endMs - it.startMs).toDouble() / 60_000.0 },
+                    stageSummary = stageSummary
+                )
+            }
+
+            // ── 9. scHistory 구성 ────────────────────────────────────
+            val scHistory = processOutput.history.map { point ->
+                PropensityPoint(
+                    timestampMs = point.timestampMs,
+                    S = point.S,
+                    C = point.C,
+                    propensity = point.propensity
+                )
+            }
+
+            // ── 10. AnalysisResult 조립 ──────────────────────────────
+            HealthResult.Success(AnalysisResult(
+                currentS = processOutput.currentS,
+                currentC = processOutput.currentC,
+                currentPropensity = processOutput.currentPropensity,
+                sleepRecords = sleepRecords,
+                scHistory = scHistory,
+                futureS = futureSPoints,
+                recommendation = null,       // "준비 중" — 서윤 언니 담당
+                modelVersion = "Two-Process Kotlin 모델 (기준 코드 일치)",
+                calculationTimeMs = System.currentTimeMillis()
+            ))
+        } catch (e: Exception) {
+            val sw = StringWriter()
+            e.printStackTrace(PrintWriter(sw))
+            HealthResult.Failure(e)
+        }
     }
 
     // ────────────────────────────────────────────────
     // 내부 헬퍼
     // ────────────────────────────────────────────────
 
-    /** CSV 파일을 파싱하여 SleepSession 목록 반환.
-     * CsvFileSource의 내부 파싱 함수를 파이프라인에서 직접 사용.
-     * 실제 앱에서는 코루틴 컨텍스트에서 readSleepSessions()를 호출.
+    /**
+     * InputStream에서 CSV를 파싱하여 SleepSession 목록 반환.
+     * CsvFileSource의 내부 파싱 함수를 사용. InputStream은 호출 측에서 use{}로 닫음.
      */
-    private fun parseCsv(csvFile: File): List<SleepSession> {
-        val inputStream = csvFile.inputStream()
-        val rows = CsvFileSource().parseSleepStageCsvForPipeline(inputStream)
+    private fun parseCsv(input: InputStream): List<SleepSession> {
+        val rows = CsvFileSource().parseSleepStageCsvForPipeline(input)
         return CsvFileSource().groupIntoSessionsForPipeline(rows)
     }
 
     /**
-     * 타임라인 시작·종료 시각 결정.
-     *
-     * - 시작: 가장 이른 세션 시작, 또는 직접 입력 sleepStartMs(더 이르면 우선)
-     * - 종료: 가장 늦은 세션 종료, 또는 직접 입력 sleepEndMs / 현재 시각(더 늦으면 우선)
-     *
-     * 세션 사이 WAKE 구간을 포함하기 위해 충분한 범위로 설정.
+     * 타임라인 범위 결정.
+     * - end = referenceTimeMs ?: 마지막 세션 endMs
+     * - start = end - 7일 (7 * 24 * 60 * 60 * 1000 ms)
      */
     private fun determineTimelineRange(
         sessions: List<SleepSession>,
-        directInput: DirectInput?
+        referenceTimeMs: Long?
     ): Pair<Long, Long> {
-        if (sessions.isEmpty() && directInput == null) {
-            throw IllegalArgumentException("CSV 세션이 없고 직접 입력도 없습니다.")
+        val end = referenceTimeMs ?: sessions.maxOfOrNull { it.endMs }
+            ?: return Pair(0L, 0L)
+
+        val start = end - 7 * 24 * 60 * 60 * 1000L
+        return Pair(start, end)
+    }
+
+    /**
+     * 타임라인 범위 [startMs, endMs)와 겹치는 세션만 필터링.
+     * sleepRecords는 전체 세션을 사용하므로 여기서 필터링하지 않음.
+     */
+    private fun filterSessionsInRange(
+        sessions: List<SleepSession>,
+        startMs: Long,
+        endMs: Long
+    ): List<SleepSession> {
+        return sessions.filter { session ->
+            session.startMs < endMs && session.endMs > startMs
+        }
+    }
+
+    /**
+     * DirectInput 반영: sleepStartMs~sleepEndMs 구간이 둘 다 있으면
+     * 그 구간을 isSleep=true인 세그먼트로 epoch 타임라인에 추가.
+     * CSV 세션 구간과 겹치는 부분은 CSV 우선 (overlap 구간에서 CSV stage 유지).
+     *
+     * 구현 방식:
+     * 1. CSV 세션들에서 isSleep이 false인 구간(overlap 없는 WAKE 구간)만 추출
+     * 2. DirectInput 구간 [sleepStartMs, sleepEndMs]을 추가하되,
+     *    CSV 세션 구간과 겹치는 부분은 제외 (CSV 우선)
+     * 3. 결과: 기존 epochTimeline + directInput이 추가된 새로운 epoch들
+     */
+    private fun applyDirectInput(
+        epochTimeline: List<EpochInput>,
+        sessions: List<SleepSession>,
+        directInput: DirectInput?,
+        timelineStart: Long,
+        timelineEnd: Long
+    ): List<EpochInput> {
+        if (directInput == null || directInput.sleepStartMs == null || directInput.sleepEndMs == null) {
+            return epochTimeline
         }
 
-        val earliestSessionStart = sessions.minOfOrNull { it.startMs } ?: 0L
-        val latestSessionEnd = sessions.maxOfOrNull { it.endMs } ?: 0L
+        val directStart = directInput.sleepStartMs
+        val directEnd = directInput.sleepEndMs
+        if (directEnd <= directStart) return epochTimeline
 
-        val directStart = directInput?.sleepStartMs
-        val directEnd = directInput?.sleepEndMs
-
-        val startTimeMs = listOfNotNull(earliestSessionStart, directStart).minOrNull() ?: 0L
-        val endTimeMs = listOfNotNull(latestSessionEnd, directEnd, System.currentTimeMillis())
-            .maxOrNull() ?: 0L
-
-        if (startTimeMs == 0L || endTimeMs == 0L) {
-            throw IllegalArgumentException("타임라인 범위를 결정할 수 없습니다.")
+        // CSV 세션들의 수면 구간 집합 (겹침 확인용)
+        val csvSleepRegions = sessions.flatMap { session ->
+            session.stages.filter { it.stage != SleepStage.WAKE }
+                .map { region -> Pair(it.startMs, it.endMs) }
         }
 
-        return Pair(startTimeMs, endTimeMs)
+        // directInput 구간 내에서 CSV 구간과 겹치지 않는 부분만 isSleep=true로 추가
+        val extraEpochs = mutableListOf<EpochInput>()
+        var cursor = directStart
+        while (cursor < directEnd) {
+            val epochStart = cursor
+            val epochEnd = cursor + EPOCH_INTERVAL_MS
+
+            // 이 epoch가 CSV 수면 구간과 겹치는지 확인
+            val overlapsCsv = csvSleepRegions.any { (cs, ce) ->
+                epochStart < ce && epochEnd > cs
+            }
+
+            if (!overlapsCsv) {
+                // CSV와 겹치지 않으면 directInput 구간 → isSleep=true
+                if (epochStart >= timelineStart && epochEnd <= timelineEnd) {
+                    extraEpochs.add(EpochInput(timestampMs = epochStart, isSleep = true))
+                }
+            }
+            cursor = epochEnd
+        }
+
+        // 기존 epochTimeline에 extraEpochs를 추가하고 정렬
+        return (epochTimeline + extraEpochs).sortedBy { it.timestampMs }
     }
 
     private fun requireNotEmpty(label: String, list: List<*>, customMessage: String = ""): List<*> {
