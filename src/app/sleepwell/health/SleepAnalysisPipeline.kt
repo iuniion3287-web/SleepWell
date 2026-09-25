@@ -1,5 +1,6 @@
 package app.sleepwell.health
 
+import app.sleepwell.health.SleepEpochConverter.EpochInput
 import java.io.InputStream
 import java.io.PrintWriter
 import java.io.StringWriter
@@ -131,7 +132,7 @@ object SleepAnalysisPipeline {
                 currentPropensity = processOutput.currentPropensity,
                 sleepRecords = sleepRecords,
                 scHistory = scHistory,
-                futureS = futureSPoints,
+                futureS = futureSPoints.map { PredictedPoint(it.timestampMs, it.predictedS, it.predictedC, it.predictedPropensity) },
                 recommendation = null,       // "준비 중" — 서윤 언니 담당
                 modelVersion = "Two-Process Kotlin 모델 (기준 코드 일치)",
                 calculationTimeMs = System.currentTimeMillis()
@@ -187,15 +188,9 @@ object SleepAnalysisPipeline {
     }
 
     /**
-     * DirectInput 반영: sleepStartMs~sleepEndMs 구간이 둘 다 있으면
-     * 그 구간을 isSleep=true인 세그먼트로 epoch 타임라인에 추가.
-     * CSV 세션 구간과 겹치는 부분은 CSV 우선 (overlap 구간에서 CSV stage 유지).
-     *
-     * 구현 방식:
-     * 1. CSV 세션들에서 isSleep이 false인 구간(overlap 없는 WAKE 구간)만 추출
-     * 2. DirectInput 구간 [sleepStartMs, sleepEndMs]을 추가하되,
-     *    CSV 세션 구간과 겹치는 부분은 제외 (CSV 우선)
-     * 3. 결과: 기존 epochTimeline + directInput이 추가된 새로운 epoch들
+     * DirectInput 반영: 새 epoch를 추가하지 않고 기존 30초 칸의 isSleep만 바꾼다.
+     * (추가하면 같은 시각 칸이 두 개 생겨 dt=0 칸과 순서 꼬임이 생긴다)
+     * CSV 기록(수면·각성 모두)과 겹치지 않는 칸만 isSleep=true로 변경 (CSV 우선).
      */
     private fun applyDirectInput(
         epochTimeline: List<EpochInput>,
@@ -208,46 +203,28 @@ object SleepAnalysisPipeline {
             return epochTimeline
         }
 
-        val directStart = directInput.sleepStartMs
-        val directEnd = directInput.sleepEndMs
+        val directStart: Long = directInput.sleepStartMs!!
+        val directEnd: Long = directInput.sleepEndMs!!
         if (directEnd <= directStart) return epochTimeline
 
-        // CSV 세션들의 수면 구간 집합 (겹침 확인용)
-        val csvSleepRegions = sessions.flatMap { session ->
-            session.stages.filter { it.stage != SleepStage.WAKE }
-                .map { region -> Pair(it.startMs, it.endMs) }
+        // CSV에 기록된 구간(수면·각성 모두) — 이 구간은 CSV 우선
+        val csvRegions = sessions.flatMap { session ->
+            session.stages.map { region -> Pair(region.startMs, region.endMs) }
         }
-
-        // directInput 구간 내에서 CSV 구간과 겹치지 않는 부분만 isSleep=true로 추가
-        val extraEpochs = mutableListOf<EpochInput>()
-        var cursor = directStart
-        while (cursor < directEnd) {
-            val epochStart = cursor
-            val epochEnd = cursor + EPOCH_INTERVAL_MS
-
-            // 이 epoch가 CSV 수면 구간과 겹치는지 확인
-            val overlapsCsv = csvSleepRegions.any { (cs, ce) ->
-                epochStart < ce && epochEnd > cs
-            }
-
-            if (!overlapsCsv) {
-                // CSV와 겹치지 않으면 directInput 구간 → isSleep=true
-                if (epochStart >= timelineStart && epochEnd <= timelineEnd) {
-                    extraEpochs.add(EpochInput(timestampMs = epochStart, isSleep = true))
-                }
-            }
-            cursor = epochEnd
+        // 새 epoch를 덧붙이지 않고, 이미 있는 30초 칸의 isSleep만 바꾼다
+        return epochTimeline.map { e ->
+            val eEnd = e.timestampMs + 30_000L
+            val inDirect = e.timestampMs < directEnd && eEnd > directStart
+            val overlapsCsv = csvRegions.any { (cs, ce) -> e.timestampMs < ce && eEnd > cs }
+            if (inDirect && !overlapsCsv) e.copy(isSleep = true) else e
         }
-
-        // 기존 epochTimeline에 extraEpochs를 추가하고 정렬
-        return (epochTimeline + extraEpochs).sortedBy { it.timestampMs }
     }
 
     private fun requireNotEmpty(label: String, list: List<*>, customMessage: String = ""): List<*> {
         if (list.isEmpty()) {
             throw IllegalArgumentException(
                 if (customMessage.isNotEmpty()) customMessage
-                else "$label이 비어 있습니다."
+                else "${label}이 비어 있습니다."
             )
         }
         return list

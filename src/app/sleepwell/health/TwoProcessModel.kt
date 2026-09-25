@@ -79,20 +79,9 @@ object TwoProcessModel {
                 0.0
             }
 
-            // C는 clockH 기준 (S 업데이트 전, epoch 시작 시점 기록)
-            val cSleep = AMPLITUDE * cos(2.0 * PI * (clockH - phaseRef) / TAU_C_HOURS)
-
-            // epoch 시작 시점 S값 기록 (S 업데이트 전)
-            history.add(SCPoint(
-                timestampMs = tsMs,
-                S = s,
-                C = cSleep,
-                propensity = s + cSleep
-            ))
-
-            // S 업데이트: (i-1)번째 epoch의 수면 여부로 [t(i-1), t(i)] 구간
+            // S 업데이트: (i-1)번째 epoch의 수면 여부로 [t(i-1), t(i)] 구간 (기준 코드와 동일)
             if (dtH > 0.0) {
-                s = if (sleeping) {
+                s = if (isSleep[i - 1]) {
                     // 수면: S 감소 (앞서 epoch(i-1)에서 잠들었음)
                     S_LOWER + (s - S_LOWER) * exp(-dtH / TAU_SLEEP_H)
                 } else {
@@ -100,6 +89,17 @@ object TwoProcessModel {
                     S_UPPER - (S_UPPER - s) * exp(-dtH / TAU_WAKE_H)
                 }
             }
+
+            // C는 clockH 기준 (S 업데이트 후, epoch 시작 시점 기록)
+            val cSleep = AMPLITUDE * cos(2.0 * PI * (clockH - phaseRef) / TAU_C_HOURS)
+
+            // epoch 시작 시점 S값 기록 (S 업데이트 후)
+            history.add(SCPoint(
+                timestampMs = tsMs,
+                S = s,
+                C = cSleep,
+                propensity = s + cSleep
+            ))
         }
 
         val lastTimestampMs = timestampsMs.last()
@@ -194,7 +194,7 @@ object TwoProcessModel {
                 }
             } else {
                 if (inBout) {
-                    val boutEndTs = timestampsMs[i]
+                    val boutEndTs = timestampsMs[i - 1]   // 마지막 수면 epoch (기준 코드와 동일)
                     val midTs = (boutStartTs!! + boutEndTs) / 2
                     boutMidpointsH.add(clockHours(midTs))
                     boutStartTs = null
