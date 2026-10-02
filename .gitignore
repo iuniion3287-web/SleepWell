@@ -26,6 +26,7 @@ build/
 # epoch 검증 하네스 산출물 (tools/verify/)
 # 스크립트(.kt/.ps1)만 커밋하고 빌드 결과는 제외한다.
 tools/verify/out/
+tools/verify/test-out/
 *.jar
 buggy-src/
 

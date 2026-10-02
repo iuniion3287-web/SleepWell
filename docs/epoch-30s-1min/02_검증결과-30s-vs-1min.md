@@ -1,4 +1,4 @@
-# 검증 결과 — 30초 버전 vs 1분 버전
+﻿# 검증 결과 — 30초 버전 vs 1분 버전
 
 **작성:** 정채윤 | **초판:** 2026-09-27 | **개정:** 2026-10-02
 
@@ -221,14 +221,68 @@ epoch 격자와 무관하다. 두 버전이 동일한 37개 세션과 동일한 
 | 항목 | 상태 |
 |---|---|
 | Android Gradle 빌드 | **내 저장소에는 앱 프로젝트가 없어 직접 못 했다.** 통합 v3 를 받아 빌드해 APK(12MB) 생성까지 확인했고 **BUILD SUCCESSFUL** (Gradle 9.6.0 / 9.7.1 둘 다). 경고 3건은 전부 불필요한 `!!`. |
-| 단위 테스트 | **없다.** 원래도 없다. 30초 버전을 그대로 두고 회귀만 비교했다. |
-| `MainActivity` / `AnalysisScreen` / `Exporters` | 소빈 파일이라 기능 검토는 안 했다. epoch 하드코딩이 남아 있는지는 grep 으로 확인했다 — **`analysis/`·`ui/` 층에 epoch 격자 하드코딩 없음.** 라벨은 `EPOCH_TEXT` 로 통일돼 있다. |
+| 회귀 테스트 | **있음 (2026-10-02 추가).** `tools/verify/run-tests.ps1` — 80개. 아래 3절. |
+| `MainActivity` / `AnalysisScreen` / `Exporters` / `EpochAggregator` | 소빈 파일이라 기능 검토는 안 했다. epoch 하드코딩이 남아 있는지는 grep 으로 확인했다 — **`analysis/`·`ui/` 층에 epoch 격자 하드코딩 없음.** 라벨은 `EPOCH_TEXT` 로 통일돼 있다. 테스트 커버리지도 없다. |
 | 1분 vs 30초 정확도 비교 | **여전히 못 한다.** 1분 → 30초 역집계 규칙이 정해져야 한다. 소빈 쪽 평가코드 작업. |
 | `SAMSUNG_TIMES_ARE_UTC` 정합성 | **미확정.** 소빈의 가설. 혜지 확인 필요. |
 
 ---
 
-## 4. 재현 방법
+## 4. 회귀 테스트 (2026-10-02 추가)
+
+`tools/verify/run-tests.ps1` — JUnit 없이 kotlinc 로 컴파일해 돌린다
+(저장소에 Gradle 프로젝트가 없기 때문). 80개 항목.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\verify\run-tests.ps1
+```
+
+| 스위트 | 대상 | 내용 |
+|---|---|---|
+| `src-epoch-1min (전체)` | 1분 버전 + 스텁 + 테스트 전체 | 80개 |
+| `src (30초, clockHours 만)` | 30초 경로 | clockHours 회귀만 |
+| `src-epoch-30s (clockHours 만)` | 30초 동결본 | clockHours 회귀만 |
+
+30초 두 폴더는 `EpochInterval` 타입이 없어 나머지 테스트를 참조할 수 없다.
+그래도 clockHours 회귀는 세 폴더 전부 돌려서 **세 곳에 같은 수정이 들어갔는지** 확인한다.
+
+### 잡히는 것
+
+| 스위트(파일) | 항목 |
+|---|---|
+| `TwoProcessModelTest` | clockHours 분해능(핵심 회귀), phaseRef 분해능, S/C 범위 불변식, S 의 epoch 간격 무관성 |
+| `EpochGridTest` | floorTo / ceilTo / isAligned, 음수(1970 이전), floor·ceil 짝 성질 |
+| `SleepEpochConverterTest` | 격자 폭이 간격을 따름, **세션 사이 WAKE 포함**, WAKE/UNKNOWN 판정, 가장 긴 겹침 우선, 마지막 부분 칸, 빈/역전 입력, 경계 정렬 |
+| `SleepAnalysisPipelineTest` | 기본 경로, `applyDirectInput` 반영(핵심 회귀), **CSV 우선 규칙**, 간격 인자 반영, 데이터 부족 처리 |
+
+### ★ 테스트가 버그를 실제로 잡는지 확인했다
+
+회귀 테스트는 통과만 하고 아무것도 안 잡을 수도 있다. 그래서 `clockHours` 버그를
+**되돌린 복사본**을 만들어 같은 스위트를 돌렸다 → **6개 FAIL**.
+(C 가 시 단위로 뭉개짐 4건, phaseRef 가 정수로 붙음 2건)
+
+### ★ 테스트를 쓰면서 발견한 하네스 버그 2개
+
+1. **`main()` 이 Unit 을 돌려줘서 JVM 종료 코드가 항상 0이었다.**
+   `RESULT=FAIL` 이 출력돼도 스크립트는 "전체 통과" 로 집계했다. CI 에 물으면 조용히 통과한다.
+   → `exitProcess(code)` 로 수정.
+2. **폴더 부재 시 조용히 건너뛰면서 통과로 집계됐다.**
+   경로 오타로 아무것도 안 돌았는데 "전체 통과" 가 나오는, 가장 나쁜 오류.
+   → `SKIP` 을 별도 상태로 분리 + **아무것도 실행 안 되면 실패** 로 처리.
+
+### ★ 예상이 틀린 테스트 2건 (기록용)
+
+코드가 아니라 기대값을 고친 사례. 나중에 같은 착각 반복하지 않도록 남긴다.
+
+- **C 의 "모두 서로 다른 값" 가정은 불가능하다.** `phaseRef` 가 항상 구간 정중앙이라
+  `cos` 대칭으로 앞뒤가 짝을 이룬다. 60칸 → 30개, 40칸 → 20개. 구간을 잘라도 `phaseRef` 가
+  따라와서 못 깬다. → **앞쪽 절반 단조 증가 + 1분 차이 두 칸이 다름** 으로 대체.
+- **`ceilTo(30001, SEC30)` 는 `60000` 이 맞아.** 30000 경계를 이미 지났으니 그다음이 60000.
+  내 기대값이 ceil 을 floor 로 헷갈린 것. 코드는 맞다.
+
+---
+
+## 5. 재현 방법
 
 ```powershell
 # 자동 탐색되는 CSV 로 실행

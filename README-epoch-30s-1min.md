@@ -102,8 +102,11 @@ epoch 간격만 바뀌고 물리는 안 바뀌는 게 S 최댓값이 소수점 6
 평가코드가 `(subject_id, night, epoch_idx)` 로 inner join 하므로 **에러 없이 조용히 틀어진다**
 (주석 기록: F1 −0.210 / Kappa −0.222). 소빈 몫. → `docs/03` 1-3
 
-**3. unit test 가 없다.** 특히 `clockHours()` 류 "조용히 틀리는" 버그는 사람이 못 잡는다.
-이 버그도 테스트가 없었으면 계속 갔을 거다. 최소 3개는 추가할 것. → `docs/03` 4
+**3. 회귀 테스트 80개 추가** (`tools/verify/test/`, `run-tests.ps1`).
+   `clockHours` 버그가 테스트 없이 통과했던 게 문제였으므로 만들었다.
+   버그를 되돌린 복사본으로 **6개가 실제로 FAIL 하는 것**까지 확인했다.
+   단, **통합본(소빈) 쪽 코드는 커버리지 밖**이다 — `EpochAggregator` / `Exporters` /
+   `MainActivity` / `AnalysisScreen` 는 안 건드린다. → `docs/03` 4
 
 **4. `통합 v3.zip` 배포 시 뺄 것** — `local.properties` (sdk.dir 가 소빈 사번이라 내 PC 에서 빌드 안 됨,
 원래 Git에 커밋 금지 파일), `.idea/` (옛 `통합 v2.iml` + 117KB 캐시).
@@ -113,7 +116,11 @@ epoch 간격만 바뀌고 물리는 안 바뀌는 게 S 최댓값이 소수점 6
 ## 검증 재현
 
 ```powershell
+# 30초 vs 1분 결과 비교 + 통합본 교차확인
 powershell -ExecutionPolicy Bypass -File tools\verify\verify-epoch.ps1
+
+# 회귀 테스트 80개
+powershell -ExecutionPolicy Bypass -File tools\verify\run-tests.ps1
 ```
 
 kotlinc 를 컴파일러 jar 로 직접 실행한다(Android Studio bundled). 결과는
