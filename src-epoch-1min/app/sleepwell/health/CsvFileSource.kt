@@ -197,13 +197,31 @@ class CsvFileSource(
 
     /**
      * "2026-09-13 18:24:00" 또는 "2026-09-13 18:24:00.000" 형식을 epoch ms로 변환.
-     * offset이 "UTC+0900"이면 KST로 해석.
+     *
+     * [통합 수정 2026-09-25 소빈 — 합의안 4절 "시간대 오류: 소빈"]
+     * 삼성헬스 내보내기 CSV 의 start_time/end_time 은 **UTC** 이고, 현지 시간과의 차이는
+     * time_offset 열에 따로 적힌다. 기존 코드는 이 문자열을 KST 로 읽어서 모든 시각이 9시간 이르게 잡혔다.
+     * 근거: (1) 혜지 데이터에서 5시간 이상 수면 대부분이 원본 기준 18~21시 시작·2~3시 종료
+     *           → UTC 로 읽어야 KST 03~06시 취침·11~12시 기상으로 자연스러움
+     *       (2) 삼성헬스 export 분석 자료: "time based fields are UTC time, the time offset is in a separate column"
+     * epoch ms(= 절대 시각)를 만드는 데는 UTC 만 알면 되므로 time_offset 은 여기서 쓰지 않는다.
+     * 화면 표시는 앱 기준 시간대(APP_ZONE)가 맡는다.
+     *
+     * ★ 아직 확정되지 않은 값 (2026-10-02 기준)
+     *   SAMSUNG_TIMES_ARE_UTC = true 는 **소빈의 가설**이다. 혜지 확인이 아직 안 끝났다.
+     *   혜지 확인 결과 원본이 KST 로 밝혀지면 이 상수만 false 로 바꾸면 이전 동작으로 돌아간다.
+     *
+     *   이 값이 C_sleep 와 phaseRef 를 바꾼다는 점이 중요하다.
+     *   Process S 는 수면/각성 순서와 지속 시간에만 의존하므로 시각 해석과 무관하다.
+     *   C_sleep 와 phaseRef 는 시계 시각을 직접 쓰므로 9시간 밀린다.
+     *   → 30초/1분 **비교**는 양쪽이 같은 해석을 쓰므로 영향이 없다.
+     *     절대 수치를 보고서에 쓸 때는 이 상수가 무엇인지 반드시 명시할 것.
      */
     private fun parseTimestamp(text: String, offset: String = "UTC+0900"): Long? {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return null
 
-        val tz = when {
+        val tz = if (SAMSUNG_TIMES_ARE_UTC) TimeZone.getTimeZone("UTC") else when {
             offset.contains("+0900") || offset.contains("+09:00") ->
                 TimeZone.getTimeZone("Asia/Seoul")
             offset.contains("+0000") || offset.contains("+00:00") || offset == "UTC" ->
@@ -222,6 +240,11 @@ class CsvFileSource(
         } catch (e: Exception) {
             null
         }
+    }
+
+    private companion object {
+        /** 삼성헬스 export 시각이 UTC 인가 (parseTimestamp 주석 참고). 혜지 확인 후 확정. */
+        const val SAMSUNG_TIMES_ARE_UTC = true
     }
 
     /** 파싱 중간 결과를 담는 내부 클래스 */

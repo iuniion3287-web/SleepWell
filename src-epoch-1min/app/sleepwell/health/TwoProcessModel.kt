@@ -162,14 +162,22 @@ object TwoProcessModel {
     /**
      * epoch timestamp(ms)의 Asia/Seoul 시계 시각(hour).
      * clockH = 시 + 분/60 + 초/3600
+     *
+     * [통합 수정 2026-10-02 소빈 반영 — 원래 2026-09-25 지적]
+     * 아래에서 `+` 를 **줄 맨 앞**에 두면 Kotlin 이 그 줄을 새 문장(단항 +)으로 읽는다.
+     * 결과적으로 `return` 은 시(hour)만 돌려주고 분/60 · 초/3600 은 조용히 버려진다.
+     *   → C_sleep 가 매시간 계단처럼 바뀌고(분 단위 변화가 사라짐),
+     *     calculatePhaseRef 의 bout 중간 시각도 정시로 뭉개진다.
+     * 실측(5/5 불일치): 12:24 → 저장소형 12.000000 / 정상 12.400000, 12:24:30 → 12.408333
+     * 연산자를 줄 **끝**에 두어야 이어진 식이 된다. 아래 형태가 그걸 한다.
      */
     private fun clockHours(tsMs: Long): Double {
         val instant = Instant.ofEpochMilli(tsMs)
         val zone = ZoneId.of("Asia/Seoul")
         val local = instant.atZone(zone)
-        return local.hour.toDouble()
-            + local.minute.toDouble() / 60.0
-            + local.second.toDouble() / 3600.0
+        return local.hour.toDouble() +
+            local.minute.toDouble() / 60.0 +
+            local.second.toDouble() / 3600.0
     }
 
     /**

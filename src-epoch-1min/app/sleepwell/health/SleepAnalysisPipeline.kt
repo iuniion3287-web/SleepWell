@@ -16,7 +16,8 @@ import java.io.StringWriter
  *     → AnalysisResult 조립 → HealthResult<AnalysisResult> 반환
  *
  * 30초 버전과의 차이 (이 파일에서 실제로 바뀐 것):
- *   1. analyze()에 epochInterval / alignToEpochBoundary 파라미터 추가 (기본 30초 = 기존 동작)
+ *   1. analyze()에 epochInterval / alignToEpochBoundary 파라미터 추가
+ *      (기본값은 2026-10-02 부터 MIN1 — 팀 공통 기준. 30초가 필요하면 SEC30 을 명시)
  *   2. applyDirectInput()의 하드코딩 30_000L 제거 → epochInterval.intervalMs 사용
  *      (이게 빠지면 1분 모델에서 직접 입력 구간 판정이 2배 길게 잡힌다)
  *   3. AnalysisResult에 epochIntervalMs/Label, inputPeriodStart/EndMs 추가
@@ -50,7 +51,8 @@ object SleepAnalysisPipeline {
      *                       수면 구간으로 타임라인에 반영.
      * @param referenceTimeMs 기준 시각 (선택). null이면 마지막 세션의 endMs.
      *                       타임라인 범위: start = referenceTimeMs - 7일, end = referenceTimeMs.
-     * @param epochInterval  모델 입력 epoch 간격. 기본 30초(기존 동작). 1분은 EpochInterval.MIN1.
+     * @param epochInterval  모델 입력 epoch 간격. 기본 EpochInterval.MIN1 (팀 공통 기준).
+ *                       30초로 돌리려면 EpochInterval.SEC30 을 명시.
      * @param alignToEpochBoundary 타임라인 시작을 epoch 경계로 내림할지. 기본 true.
      * @return HealthResult<AnalysisResult>
      *         - Success: 분석 결과

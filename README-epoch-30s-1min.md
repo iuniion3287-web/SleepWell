@@ -1,14 +1,28 @@
 # 학술제 이번 주 작업 — 정채윤
 
-**일자:** 2026-09-27 | **주제:** Two-Process 모델 입력 epoch 30초 → 1분
+**초판:** 2026-09-27 | **개정:** 2026-10-02 | **주제:** Two-Process 모델 입력 epoch 30초 → 1분
+
+> **2026-10-02 개정 요약**
+>
+> - 소빈 통합 v3(`통합 v3.zip`)를 빌드해 **APK 생성까지 확인**했다. Gradle 9.6.0 / 9.7.1 둘 다 성공.
+> - 소빈이 지적해 준 **[통합 수정] 2건을 저장소에 반영**했다.
+>   ① `TwoProcessModel.clockHours()` 버그 (분·초를 버리고 시만 반환하던 것) — kotlinc 로 5/5 불일치 재현 확인
+>   ② `CsvFileSource` 시각 해석 KST → UTC (`SAMSUNG_TIMES_ARE_UTC` 플래그)
+> - **기본값이 30초 → 1분**으로 바뀌었다(`EpochInterval.DEFAULT`).
+> - **앱 export 격자도 1분이 됐다**(2026-09-26 회의). 초판에 쓴 "export 는 30초 유지" 는 정정했다.
+>
+> ⚠️ ① 때문에 **C 계열 수치가 전부 바뀌었다.** 아래 표는 새 수치다.
+> **S 계열은 바뀌지 않았다.** 새 수치 근거는 `docs/02` 2-1·2-2 참조.
+>
+> 반영 후 소빈 v3가 독립적으로 돌린 값과 **소수점 6자리까지 일치**했다.
 
 ---
 
 ## 이번 주에 한 것
 
-Two-Process 모델에 들어가는 epoch 타임라인을 30초에서 **1분으로 바꾸는 버전**을 새로 만들었다.
-**30초 버전은 한 글자도 안 건드리고 그대로 동결**해 뒀다. 두 버전 다 실제로 빌드해서
-같은 데이터로 돌려보고 숫자가 맞는 것을 확인했다.
+Two-Process 모델에 들어가는 epoch 타임라인을 30초에서 **1분으로 바꾸는 버전**을 만들었고,
+30초 버전은 그대로 `src-epoch-30s/`에 동결해 뒀다.
+이후 소빈 통합본을 받아 빌드 검증하고, 통합본에만 있던 수정 2건을 내 저장소에도 반영했다.
 
 ---
 
@@ -21,8 +35,8 @@ Two-Process 모델에 들어가는 epoch 타임라인을 30초에서 **1분으�
 │   ├── 01_epoch-30s-1min-변경사항.md            무엇을 왜 바꿨는지
 │   ├── 02_검증결과-30s-vs-1min.md              실제 숫자로 확인한 내용 + 한계
 │   └── 03_다음주-확인필요사항-정채윤.md          소빈·서윤·혜지한테 물어볼 것
-├── src-epoch-30s/app/sleepwell/health/          30초 버전 (동결, 현행과 동일)
-├── src-epoch-1min/app/sleepwell/health/         1분 버전 (신규, EpochInterval.kt 추가)
+├── src-epoch-30s/app/sleepwell/health/          30초 버전 (동결)
+├── src-epoch-1min/app/sleepwell/health/         1분 버전 (EpochInterval.kt 추가)
 └── tools/verify/                                컴파일·비교 검증 하네스 (앱 빌드 제외)
 ```
 
@@ -36,7 +50,9 @@ Two-Process 모델에 들어가는 epoch 타임라인을 30초에서 **1분으�
 |---|---|---|
 | 7일 epoch 수 | 20,160 | 10,080 (정확히 1/2) |
 | 현재 S | 0.289993 | 0.289342 (0.22% 차이) |
-| 현재 propensity | 0.410746 | 0.411904 |
+| 현재 C_sleep | 0.118209 | 0.120053 |
+| 현재 propensity | 0.408203 | 0.409394 |
+| C 진폭 | ±0.150000 | ±0.150000 (진폭을 꽉 채움 = 버그 수정 후) |
 | S 최댓값 | 0.999755 | **0.999755 (완전히 동일)** |
 | 세션 수 | 37 | 37 (동일) |
 | 그래프 표시 | — | **사실상 동일** (전달 간격 10~15분이라) |
@@ -44,43 +60,53 @@ Two-Process 모델에 들어가는 epoch 타임라인을 30초에서 **1분으�
 **"1분으로 바꿔도 결과가 같은데 계산량은 절반"** 이 확인됐다.
 epoch 간격만 바뀌고 물리는 안 바뀌는 게 S 최댓값이 소수점 6자리까지 같다는 것으로 확인된다.
 
+**C 진폭이 ±0.150000 으로 꽉 차는 게 `clockHours()` 버그 수정의 증거다.**
+초판엔 ±0.149069 였다. 분·초를 버리고 정수로 뭉개졌기 때문에 진폭 극값에 못 미치던 것이다.
+
 그래프는 눈에 띄게 달라지지 않는다. 눈에 띄는 차이는 epoch 수(전송량)와 계산 시간이고,
 1분이면 충분하다. 단점은 **1분 이하 짧은 각성 구간이 1분으로 뭉개진다**는 것.
 자세한 내용은 `docs/01` 2절.
 
 ---
 
-## 코드에서 실제로 바뀐 것 (4곳)
+## 코드에서 실제로 바뀐 것
 
-1. **`EpochInterval.kt` 신규** — `SEC30` / `MIN1` enum. 하드코딩 `30_000L` 을 한 곳에 모았다.
-2. **`SleepEpochConverter.toEpochTimeline()`** — epoch 간격을 인자로 받게 변경했다. 기본값 30초라
-   기존 호출은 그대로 동작한다. epoch 경계 정렬 옵션 추가(기본 on).
+**epoch 전환 (초판, 4곳)**
+
+1. **`EpochInterval.kt` 신규** — `SEC30` / `MIN1` enum + `EpochGrid`(경계 정렬). 기본값은 `MIN1`.
+2. **`SleepEpochConverter.toEpochTimeline()`** — epoch 간격을 인자로 받게 변경. 정렬 옵션 추가.
 3. **`SleepAnalysisPipeline.applyDirectInput()`** — 하드코딩 `30_000L` 제거. **이게 핵심.**
    이걸 안 고치면 1분 모델에서 사용자가 입력한 취침·기상 시각이 절반 크기로만 반영된다.
-   겉보기엔 멀쩡하게 돌아가서 조용히 틀린다.
-4. **`AnalysisResult`** — `epochIntervalMs` / `epochIntervalLabel` / `inputPeriodStartMs` /
-   `inputPeriodEndMs` 4개 필드 추가. **모두 기본값 있음** → 소빈 화면 코드 수정 불필요.
+4. **`AnalysisResult`** — epoch 메타데이터 4개 필드 추가. **모두 기본값 있음** → 화면 코드 수정 불필요.
 
-`TwoProcessModel.kt` 와 `CsvFileSource.kt` 는 **한 줄도 안 바꿨다.**
-둘 다 epoch 간격과 무관하게 동작한다. (S 최댓값이 동일한 이유가 이것이다.)
+**통합본 반영 (2026-10-02, 3곳)**
+
+5. **`TwoProcessModel.clockHours()`** — `+` 연산자를 줄 끝으로 이동.
+6. **`CsvFileSource.parseTimestamp()`** — 시각 해석을 UTC 로. `SAMSUNG_TIMES_ARE_UTC` 플래그로 되돌릴 수 있음.
+7. **`EpochInterval.kt` 주석 / `DEFAULT`** — "export 30초 유지" 라는 잘못된 안내 정정, 기본값 `MIN1` 로.
+
+`CsvFileSource` 를 제외한 **나머지 파일은 epoch 전환과 무관하게 동작한다.**
+(S 최댓값이 동일한 이유가 이것이다)
 
 ---
 
 ## 바로 확인해야 할 것
 
-**1. 모델 입력만 1분, 앱 export 격자는 30초 유지로 뒀다.**
-export 격자(`EPOCH_MS`)는 소빈 파일이고 `epochIdx` 가 시각 좌표라서 30초(Sleep-EDF 표준)와
-묶여 있다. 여기까지 바꾸려면 소빈이 `HealthModels.kt` / `EpochAggregator` 를 함께 손봐야 한다.
-근거는 `docs/01` 6절.
+**1. `SAMSUNG_TIMES_ARE_UTC = true` 는 아직 가설이다.**
+삼성헬스 CSV 가 UTC 라는 건 소빈의 근거 기반 판단이고 혜지 확인이 남았다.
+`Process S` 는 영향 없지만 **`C_sleep`·`phaseRef` 는 9시간 밀린다.**
+확정 전 C 계열 절대 수치를 보고서에 쓰면 안 된다. → `docs/03` 1-4
 
-**2. 합의 문서를 아직 안 고쳤다.** `interface-schema-전처리-프론트.md` 에 "30초 epoch"로
-합의돼 있다. 소빈이 1분 확정을 해야 문서와 구현이 한 방향을 본다. → `docs/03` 1-1
+**2. Sleep-EDF 1분 → 30초 역집계 규칙이 아직 없다.**
+`epoch_idx` 단위가 30초 → 1분으로 바뀌었는데 GT 는 30초 기준이다.
+평가코드가 `(subject_id, night, epoch_idx)` 로 inner join 하므로 **에러 없이 조용히 틀어진다**
+(주석 기록: F1 −0.210 / Kappa −0.222). 소빈 몫. → `docs/03` 1-3
 
-**3. 1분 모델 성능을 아직 못 잤다.** Sleep-EDF 정답이 30초라 **1분 → 30초 역집계** 규칙이
-먼저 정해져야 한다. 이건 소빈 #2 파이프라인 작업과 겹친다. → `docs/03` 1-3
+**3. unit test 가 없다.** 특히 `clockHours()` 류 "조용히 틀리는" 버그는 사람이 못 잡는다.
+이 버그도 테스트가 없었으면 계속 갔을 거다. 최소 3개는 추가할 것. → `docs/03` 4
 
-**4. Android 빌드는 확인 못 했다.** 이 폴더에 앱 프로젝트가 없어서 kotlinc 개별 컴파일만 했다.
-앱에 붙일 때 Gradle 빌드로 한 번 더 확인이 필요하다. → `docs/02` 5절
+**4. `통합 v3.zip` 배포 시 뺄 것** — `local.properties` (sdk.dir 가 소빈 사번이라 내 PC 에서 빌드 안 됨,
+원래 Git에 커밋 금지 파일), `.idea/` (옛 `통합 v2.iml` + 117KB 캐시).
 
 ---
 
@@ -104,9 +130,11 @@ https://github.com/iuniion3287-web/SleepWell
 
 | 저장소 경로 | 내용 |
 |---|---|
-| `src/app/sleepwell/health/` | 30초 버전 (기존 경로, 그대로 — 소빈 화면이 이쪽을 본다) |
-| `src-epoch-1min/app/sleepwell/health/` | 1분 버전 (신규) |
+| `src/app/sleepwell/health/` | 30초 버전 (기존 경로) |
+| `src-epoch-30s/app/sleepwell/health/` | 30초 버전 동결 스냅샷 |
+| `src-epoch-1min/app/sleepwell/health/` | 1분 버전 |
 | `docs/epoch-30s-1min/` | 이번 주 문서 3종 |
+| `tools/verify/` | 검증 하네스 |
 
 1분으로 실제 전환하려면 `src/` 를 `src-epoch-1min/` 내용으로 교체하면 된다.
 되돌리기는 git 커밋으로 충분하다(30초 버전이 그대로 남아 있다).

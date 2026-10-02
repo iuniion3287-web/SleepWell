@@ -1,6 +1,16 @@
 # epoch 30초 → 1분 변경 사항
 
-**작성:** 정채윤 | **일자:** 2026-09-27 | **대상:** Two-Process 모델 입력 epoch 간격
+**작성:** 정채윤 | **초판:** 2026-09-27 | **개정:** 2026-10-02 | **대상:** Two-Process 모델 입력 epoch 간격
+
+> **2026-10-02 개정 요약**
+>
+> 1. **6절이 바뀌었다.** 앱 export 격자도 1분이 됐다(2026-09-26 회의). 초판의 "export 는 30초 유지" 는
+>    더 이상 사실이 아니다. 나머지 절은 그대로여도 되고 6절만 읽으면 된다.
+> 2. **기본값이 MIN1 로 바뀌었다.** `EpochInterval.DEFAULT` = `SEC30` → `MIN1`.
+>    팀 기준이 1분인데 기본값만 30초면 인자를 빠뜨린 호출이 조용히 30초로 계산된다.
+>    30초가 필요하면 `SEC30` 을 명시한다.
+> 3. 소빈 통합본의 수정 2건을 저장소에 반영했다. `clockHours()` 버그 수정, 시각 해석 KST → UTC.
+>    → **C 계열 수치가 전부 바뀌었다.** 새 수치는 `02_검증결과-30s-vs-1min.md` 참고.
 
 ---
 
@@ -96,7 +106,7 @@ fun toEpochTimeline(
     sessions: List<SleepSession>,
     startTimeMs: Long,
     endTimeMs: Long,
-    epochInterval: EpochInterval = EpochInterval.DEFAULT,   // 기본 30초
+    epochInterval: EpochInterval = EpochInterval.DEFAULT,   // 기본 MIN1 (30초는 SEC30 명시)
     alignToEpochBoundary: Boolean = true                    // 기본 정렬
 ): List<EpochInput>
 ```
@@ -171,49 +181,61 @@ val inputPeriodEndMs: Long = 0L
 
 ---
 
-## 6. ★ 아직 손대지 않은 것 — export 격자 (소빈 확인 필요)
+## 6. ★ 앱 export 격자 — 초판과 달리 1분으로 바뀌었다
 
-앱 export 쪽 격자는 30초를 그대로 쓰고 있다. 소빈이 관리하는 파일이다.
+> **2026-10-02 개정.** 이 절은 초판(2026-09-27) 기준이고, 더 이상 사실이 아니다.
+> 2026-09-26 회의에서 **"데이터셋과 앱을 모두 1분 기준으로 통일"** 로 결정되었고,
+> 소빈이 `HealthModels.EPOCH_MS` 를 `60_000L` 로 바꾸는 반영을 끝냈다.
+> 즉 **모델 입력과 export 가 둘 다 1분**이고 서로 같은 값이다.
+> 초판에 내가 "export 는 30초 유지가 안전하다"고 쓴 건 회의 결정 이전 판단이었다.
+
+앱 export 격자:
 
 ```kotlin
-// HealthModels.kt (소빈 앱, MVP 개발.zip 안)
-const val EPOCH_MS = 30_000L   // 팀 공통 격자: 30초
+// HealthModels.kt (소빈 관리, 통합 v3 기준)
+const val EPOCH_MS = 60_000L          // 1분
+const val EPOCH_TEXT = "1분"
 
-// EpochAggregator.kt
-Math.floorDiv(session.startMs - anchor, EPOCH_MS)
-val from = anchor + i * EPOCH_MS
+// EpochAggregator.kt — epoch_idx 정의도 1분 기준으로 바뀜
+"epoch_idx = 그 밤 정오부터 몇 번째 1분 칸. epoch_idx × 60 = 정오 기준 경과 초"
 ```
 
-`EpochAggregator` 의 `epochIdx` 는 행 번호가 아니라 **시각 좌표**이고, `selfCheck()` 가
-`timeMs - epochIdx * EPOCH_MS` 가 밤마다 상수인지 검사한다. 이게 깨지면 평가코드가
-`(subject_id, night, epoch_idx)` inner join 이 조용히 틀어진다(주석에实测 F1 −0.210 기록).
+30초 버전은 소빈이 `통합 v2` 폴더에 그대로 보관해 뒀다. 되돌릴 때는 두 곳을 같이 바꿔야 한다:
+`EpochInterval.DEFAULT` 와 `HealthModels.EPOCH_MS`.
 
-그래서 **export 격자는 30초 유지**했다. 여기까지 1분으로 바꾸려면 소빈이 `EPOCH_MS` 와
-`EpochAggregator` 를 함께 손봐야 하고, Sleep-EDF 정답(30초)과의 join 규칙도 다시 정해야 한다.
+### 남은 위험 — Sleep-EDF 평가 join (아직 미해결)
 
-**정리하면:**
-- 모델 입력 격자 → 1분 (이번 작업, 완료)
-- 앱 export 격자 → 30초 유지 (소빈 관리, 별도)
+`epoch_idx` 의 단위가 30초 → 1분으로 바뀌었는데, Sleep-EDF 정답(`onset_sec`)은 30초 기준이다.
+평가코드는 `(subject_id, night, epoch_idx)` 로 inner join 하므로 **단위만 다르면 에러 없이
+조용히 틀어진다.** `EpochAggregator` 주석에 그대로 기록돼 있다:
 
-화면에서 "모델 계산은 1분인데 기록 그래프는 30초 칸"으로 보이는 상황은 의도한 것이다.
-한쪽을 바꾸려면 팀 합의가 필요하다.
+> night 이 어긋나면 F1(macro) −0.210 / Kappa −0.222, 오류 메시지 0줄
+
+1분 예측을 30초 정답과 비교하려면 **1분 → 30초 역집계**(각 30초 정답 epoch 를 대응하는 1분 값으로
+되돌리는 규칙)가 먼저 정해져야 한다. 소빈이 "평가코드 쪽에서 정한다"고 맡았다.
+
+**그 규칙이 정해지기 전에는 1분 성능 수치를 발표자료에 올리면 안 된다.**
 
 ---
 
 ## 7. 1분 버전을 쓰는 법
 
 ```kotlin
-// 1분으로 계산
+// 1분으로 계산 (2026-10-02 부터 기본값이 이쪽 — 인자 생략 가능)
 SleepAnalysisPipeline.analyze(
     input = csvStream,
     epochInterval = EpochInterval.MIN1,
     alignToEpochBoundary = true
 )
 
-// 30초로 계산 (기본값, 인자 없이 호출해도 이쪽)
-SleepAnalysisPipeline.analyze(input = csvStream)
+// 30초로 계산 — 반드시 SEC30 을 명시한다. (생략하면 1분으로 간다)
+SleepAnalysisPipeline.analyze(
+    input = csvStream,
+    epochInterval = EpochInterval.SEC30,
+    alignToEpochBoundary = true
+)
 
-// 30초 버전과 완전히 동일한 동작 (정렬 없이)
+// 30초 버전과 완전히 동일한 동작 (정렬까지 없음 — 초판 30초 동작 재현)
 SleepAnalysisPipeline.analyze(
     input = csvStream,
     epochInterval = EpochInterval.SEC30,
@@ -221,5 +243,5 @@ SleepAnalysisPipeline.analyze(
 )
 ```
 
-`EpochInterval` 에 5분 같은 걸 추가하려면 enum 에 한 줄 넣고 `SECOND_5` 처럼 쓰면 된다.
+`EpochInterval` 에 5분 같은 걸 추가하려면 enum 에 한 줄 넣고 `MIN5` 처럼 쓰면 된다.
 `applyDirectInput` 이나 다른 곳을 다시 손볼 필요는 없다.

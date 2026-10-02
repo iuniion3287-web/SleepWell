@@ -55,10 +55,10 @@ data class AnalysisResult(
      *   그래프 x축 눈금·점 개수를 화면이 추측해야 해서 서로 다른 계산이 같은 그래프로
      *   그려진다. 소요시간 계산(epoch 수 × 간격)과 점 개수 표시에 바로 쓰인다.
      */
-    val epochIntervalMs: Long = 30_000L,
+    val epochIntervalMs: Long = 60_000L,
 
     /** epoch 간격 표시 라벨 ("30초" / "1분"). 화면 표기용. */
-    val epochIntervalLabel: String = "30초",
+    val epochIntervalLabel: String = "1분",
 
     /** 계산에 사용한 타임라인 시작 시각 (KST epoch ms). 모델 입력 구간의 앞쪽 끝. */
     val inputPeriodStartMs: Long = 0L,

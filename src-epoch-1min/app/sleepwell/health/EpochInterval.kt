@@ -4,17 +4,31 @@ package app.sleepwell.health
  * 모델 입력 epoch 간격 (두 가지 값을 모두 지원).
  *
  * 왜 enum인가:
- *   - 30초는 Sleep-EDF / 평가코드 공통 격자(기준). 1분은 앱 화면·리포팅용 경량 격자.
  *   - 두 값을 코드 한 곳에 정의해두면, 나중에 "분리 10분 epoch" 같은 게 필요해질 때
  *     여기 한 줄 추가로 끝나고, 하드코딩된 30_000L 을 다시 찾을 필요가 없다.
  *   - 하드코딩(`30_000L`)이 파이프라인 두 군데에 흩어져 있었다. 이번에 `EpochInterval`
  *     로 모아서, 1분으로 바꿀 때 빠뜨리는 일이 없게 한다.
  *
- * 주의 (중요):
- *   이 값은 **Two-Process 모델 입력 격자**에만 해당한다.
- *   앱 export 격자(`HealthModels.EPOCH_MS`, `EpochAggregator`)는 소빈 쪽 파일이고
- *   Sleep-EDF 30초 표준에 묶여 있다. 그쪽은 이 enum과 별개로 30초를 유지한다.
- *   두 값을 한꺼번에 바꾸면 평가코드와 join이 어긋나 점수가 조용히 틀린다.
+ * ★ 2026-10-02更正 — 앱 export 격자도 1분으로 바뀌었다
+ *
+ *   아래 주석은 초판(2026-09-27) 기준이고, 더 이상 사실이 아니다. 그대로 두면
+ *   "export 는 30초 유지"라고 잘못 안내하므로 고쳤다.
+ *
+ *   2026-09-26 회의 결정: "현재 30초 epoch → 1분 epoch. 데이터셋과 앱을 모두 1분으로 통일".
+ *   소빈이 `HealthModels.EPOCH_MS` 를 `60_000L` 로 바꾸고 export 파일을 `epoch_1m.csv` 로
+ *   바꿨다. 즉 **모델 입력과 export 가 모두 1분**이고, 이 enum 과 `EPOCH_MS` 가 같은 값이다.
+ *
+ *   그래서 아래 "SEC30" 은 예전 기준선을 남겨 둔 선택지일 뿐, 현재 앱 기본은 아니다.
+ *   되돌리려면 두 곳(`EpochInterval.DEFAULT` 와 `HealthModels.EPOCH_MS`)을 같이 바꿔야 한다.
+ *
+ * ★ 남은 위험 — Sleep-EDF 평가 join
+ *
+ *   `EpochAggregator.epochIdx` 가 "그 밤 정오부터 몇 번째 1분 칸"으로 바뀌었다.
+ *   그런데 Sleep-EDF 정답(`onset_sec`)은 30초 기준이라 정답 쪽 epoch_idx 와 단위가 다르다.
+ *   평가코드는 `(subject_id, night, epoch_idx)` 로 inner join 하므로,
+ *   단위만 다르면 **에러 없이 조용히 틀어진다** (주석 기록: night 어긋나면 F1 −0.210 / Kappa −0.222).
+ *   1분 예측 → 30초 정답 비교 규칙은 소빈 쪽(평가코드)에서 정한다.
+ *   그 규칙이 정해지기 전에는 1분 성능 수치를 보고서에 쓰면 안 된다.
  */
 enum class EpochInterval(
     /** epoch 길이 (밀리초) */
@@ -24,15 +38,22 @@ enum class EpochInterval(
     /** 화면·리포트 표시용 라벨 */
     val label: String
 ) {
-    /** 기존 버전. Sleep-EDF / 평가코드 공통 격자. */
+    /** 2026-09-27 초판 기준선. 지금은 비교·회 실험용으로만 남는다. */
     SEC30(30_000L, 30, "30초"),
 
-    /** 이번 주 추가한 버전. 계산량은 절반, 단기 경향·화면 표시에 충분. */
+    /** 팀 공통 기준 (2026-09-26 회의). 앱 export(EPOCH_MS)와 같은 값. */
     MIN1(60_000L, 60, "1분");
 
     companion object {
-        /** 파이프라인 기본값. 호출 측에서 명시하지 않으면 이 값이 쓰인다. */
-        val DEFAULT: EpochInterval = SEC30
+        /**
+         * 파이프라인 기본값. 호출 측에서 명시하지 않으면 이 값이 쓰인다.
+         *
+         * 2026-10-02: SEC30 → MIN1 로 바꾼다.
+         *   팀 기준이 1분인데 기본값만 30초면, 인자를 빠뜨린 호출이 조용히 30초로 계산된다.
+         *   그 결과는 화면·export(1분)와 어긋나는데 아무도 모른다. 이게 바로 막는 종류의 실수다.
+         *   30초가 필요하면 SEC30 을 명시한다. (30초/1분 비교 실험에서 쓴다)
+         */
+        val DEFAULT: EpochInterval = MIN1
 
         /** epoch 길이(초)로 조회. 없으면 null. */
         fun fromSeconds(seconds: Int): EpochInterval? =

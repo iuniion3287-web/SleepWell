@@ -4,8 +4,9 @@ package app.sleepwell.health
  * SleepSession 목록을 epoch 타임라인으로 변환. (1분 버전)
  *
  * 30초 버전(`src-epoch-30s/`)은 `EPOCH_INTERVAL_MS = 30_000L` 로 고정돼 있었다.
- * 여기서는 간격을 `EpochInterval` 인자로 받고, 기본값은 `EpochInterval.SEC30`
- * (= 기존 30초 동작과 완전히 동일)이지만 1분도 같은 코드로 돌아간다.
+ * 여기서는 간격을 `EpochInterval` 인자로 받는다. 기본값은 2026-10-02 부터 `EpochInterval.MIN1`
+ * (팀 공통 기준). 30초 동작은 `EpochInterval.SEC30` + `alignToEpochBoundary = false` 로
+ * 그대로 재현할 수 있다.
  *
  * 중요: 세션 사이 깨어 있던 시간(WAKE)까지 포함한 전체 타임라인을 만들어야 한다.
  * 수면 구간만 넣으면 세션 사이를 모두 수면으로 간주하여 S 계산이 틀어진다.
@@ -30,7 +31,7 @@ object SleepEpochConverter {
      * @param sessions  파싱된 SleepSession 목록
      * @param startTimeMs 타임라인 시작 시각 (KST epoch ms). 참조 시간 - 7일 또는 직접 입력.
      * @param endTimeMs   타임라인 종료 시각 (KST epoch ms). 참조 시간 또는 마지막 세션 endMs.
-     * @param epochInterval epoch 간격. 기본값 30초(기존 동작). 1분은 EpochInterval.MIN1.
+     * @param epochInterval epoch 간격. 기본값 EpochInterval.MIN1 (팀 공통 기준). 30초는 SEC30.
      * @param alignToEpochBoundary 시작 시각을 epoch 경계로 내림할지. 기본 true.
      * @return epoch 리스트 (timestampMs 오름차순). 마지막 epoch는 interval보다 짧아도 포함.
      */
