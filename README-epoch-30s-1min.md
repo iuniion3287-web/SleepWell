@@ -108,8 +108,17 @@ epoch 간격만 바뀌고 물리는 안 바뀌는 게 S 최댓값이 소수점 6
    단, **통합본(소빈) 쪽 코드는 커버리지 밖**이다 — `EpochAggregator` / `Exporters` /
    `MainActivity` / `AnalysisScreen` 는 안 건드린다. → `docs/03` 4
 
-**4. `통합 v3.zip` 배포 시 뺄 것** — `local.properties` (sdk.dir 가 소빈 사번이라 내 PC 에서 빌드 안 됨,
-원래 Git에 커밋 금지 파일), `.idea/` (옛 `통합 v2.iml` + 117KB 캐시).
+**4. 소빈 쪽도 1분으로 바뀌는 걸 알고 있다.** 앱 export 격자까지 1분(`EPOCH_MS = 60_000L`,
+`epoch_1m.csv`)이라 **모델 입력·export 모두 1분**이고 서로 같은 값이다. 30초는 `통합 v2` 에 보관.
+그래서 초판에 쓴 "export 는 30초 유지" 는 이미 정정했다.
+
+**정리하면 남은 건 3개다** (전부 내 저장소 밖):
+
+| 남은 것 | 담당 | 왜 막혀 있나 |
+|---|---|---|
+| `SAMSUNG_TIMES_ARE_UTC` 확정 | 혜지 확인 | 소빈의 가설. 확정 전 C 절대 수치를 보고서에 못 씀 |
+| Sleep-EDF 1분→30초 역집계 규칙 | 소빈 | epoch_idx 단위가 GT와 달라 조용히 틀어질 수 있음 |
+| `interface-schema-전처리-프론트.md` 30초 표기 6곳 | 소빈/팀장 | 합의 문서라 내 권한 밖 |
 
 ---
 
